@@ -110,6 +110,61 @@ PHP;
     }
 
     #[Test]
+    public function a_computed_default_is_rewritten_on_every_version(): void
+    {
+        // The exception that makes the version rule above worth stating
+        // carefully. The fast path works by storing one value in the
+        // catalogue, so it only exists while there is one value. now() and
+        // gen_random_uuid() have to be evaluated per row, which means the
+        // table is rewritten on 16 exactly as it was on 10.
+        //
+        // Missing this is worse than the false positive the version check was
+        // added to avoid: a warning somebody dismisses costs a glance, and a
+        // rewrite nobody warned about costs an exclusive lock in production.
+        foreach ([
+            "            \$table->timestamp('seen_at')->default(DB::raw('now()'));",
+            "            \$table->uuid('public_id')->default(DB::raw('gen_random_uuid()'));",
+            "            \$table->timestamp('created')->default(DB::raw('CURRENT_TIMESTAMP'));",
+        ] as $line) {
+            foreach (['16', '11', '10'] as $version) {
+                $this->assertNotNull(
+                    $this->firstOf($this->onExisting($line, 'pgsql', $version), 'add-column-with-default'),
+                    "a computed default should be reported on PostgreSQL {$version}: {$line}",
+                );
+            }
+        }
+
+        $finding = $this->firstOf(
+            $this->onExisting("            \$table->uuid('public_id')->default(DB::raw('gen_random_uuid()'));", 'pgsql', '16'),
+            'add-column-with-default',
+        );
+
+        // The report has to say which of the two reasons it is, or the reader
+        // goes and checks their version for nothing.
+        $this->assertStringContainsString('computed default', $finding->summary);
+        $this->assertStringContainsString('for each row', $finding->because);
+    }
+
+    #[Test]
+    public function a_constant_default_is_not_mistaken_for_a_computed_one(): void
+    {
+        // The list of volatile functions is matched against the source line,
+        // so the thing to prove is that it does not catch a constant that
+        // merely mentions one. Getting this wrong would reintroduce the false
+        // positive on the common case in order to fix the rare one.
+        foreach ([
+            "            \$table->string('label')->default('now');",
+            "            \$table->string('note')->default(DB::raw(\"'BJ'\"));",
+            "            \$table->integer('attempts')->default(0);",
+        ] as $line) {
+            $this->assertNull(
+                $this->firstOf($this->onExisting($line, 'pgsql', '16'), 'add-column-with-default'),
+                "a constant default should stay quiet on PostgreSQL 16: {$line}",
+            );
+        }
+    }
+
+    #[Test]
     public function an_unknown_version_assumes_the_old_behaviour(): void
     {
         // The noisy direction on no evidence, because a rule that stays quiet

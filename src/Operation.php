@@ -64,6 +64,54 @@ final class Operation
     }
 
     /**
+     * The functions every engine has to evaluate per row.
+     *
+     * Deliberately a list of names rather than "anything that looks like a
+     * call". default(DB::raw("'BJ'")) is a call and is still a constant, and a
+     * rule that flagged it would be wrong about the common case in order to be
+     * right about the rare one.
+     */
+    private const VOLATILE_DEFAULTS = [
+        'now(', 'clock_timestamp(', 'statement_timestamp(', 'timeofday(',
+        'current_timestamp', 'localtimestamp', 'current_date', 'current_time',
+        'random(', 'gen_random_uuid(', 'uuid_generate_v4(', 'nextval(',
+        'sysdate(', 'curdate(', 'curtime(', 'utc_timestamp(', 'uuid(',
+    ];
+
+    /**
+     * Whether the default has to be computed for each existing row.
+     *
+     * This is the exception to the version rule, and the reason it is worth
+     * having. The fast path that arrived in PostgreSQL 11 works by storing one
+     * value in the catalogue and handing it to every row that predates the
+     * column, which only holds while there is *one* value. A default the
+     * engine has to evaluate per row has no single value to store, so the
+     * table is rewritten exactly as it was on 10, on any version.
+     *
+     * Read off the source line because the parser keeps modifier names rather
+     * than their arguments. That is coarse, and it is the coarseness that
+     * makes it safe: the worst case is a constant default containing one of
+     * these words, which costs a reader one glance, where missing a volatile
+     * one costs them an exclusive lock in production.
+     */
+    public function hasVolatileDefault(): bool
+    {
+        if (! $this->hasDefault()) {
+            return false;
+        }
+
+        $source = strtolower($this->source);
+
+        foreach (self::VOLATILE_DEFAULTS as $needle) {
+            if (str_contains($source, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Whether this operation happens while the table is being created.
      *
      * The single most important distinction in the whole tool. Every rule here

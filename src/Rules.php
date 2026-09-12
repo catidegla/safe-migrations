@@ -53,18 +53,28 @@ final class Rules
             return null;
         }
 
-        if ($target->defaultOnAddIsInstant()) {
+        // A default the engine evaluates per row has no single value to put in
+        // the catalogue, so the fast path does not apply to it and the version
+        // does not save you. This is the one case where a modern target is
+        // still rewritten, and the one a version check on its own gets wrong.
+        $volatile = $op->hasVolatileDefault();
+
+        if ($target->defaultOnAddIsInstant() && ! $volatile) {
             // Nothing to say. Saying it anyway is how a linter becomes noise.
             return null;
         }
 
-        $reason = $target->isVersioned()
-            ? "on {$target->label()} this writes the default into every existing row, holding an exclusive lock for the whole rewrite"
-            : "no database version was configured, and on older versions of every engine this rewrites the whole table under an exclusive lock";
+        $reason = match (true) {
+            $volatile => 'the default is computed for each row, so there is no single value for the catalogue to store and the table is rewritten under an exclusive lock on every version, including the ones where a constant default is instant',
+            $target->isVersioned() => "on {$target->label()} this writes the default into every existing row, holding an exclusive lock for the whole rewrite",
+            default => 'no database version was configured, and on older versions of every engine this rewrites the whole table under an exclusive lock',
+        };
 
         return [
             Finding::BLOCKING,
-            "adding {$op->column} with a default rewrites the table",
+            $volatile
+                ? "adding {$op->column} with a computed default rewrites the table"
+                : "adding {$op->column} with a default rewrites the table",
             $reason,
             'add the column nullable, backfill in batches outside the migration, then set the default and the not null constraint separately',
         ];
