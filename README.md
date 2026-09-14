@@ -51,7 +51,7 @@ php artisan migrate:lint            # asks your connection what it is
 safe-migrations --database pgsql --version 16
 ```
 
-Inside a booted application the driver comes from your connection and the version is asked of the server, because the developer will eventually be describing the database they had last year. In CI there is usually no database, so set it in config. **Without a version, every version-dependent rule assumes the oldest behaviour** — the direction that stays loud rather than the one that stays quiet about a real outage.
+Inside a booted application the driver comes from your connection and the version is asked of the server, because the developer will eventually be describing the database they had last year. In CI there is usually no database, so set it in config. **Without a version, every version-dependent rule assumes the oldest behaviour**, the direction that stays loud rather than the one that stays quiet about a real outage.
 
 ## Two different dangers
 
@@ -140,7 +140,7 @@ vendor/bin/safe-migrations --database pgsql --version 16 --since origin/main --g
 
 `--since` checks only the migrations a pull request **added**, because the ones already merged are already running and warning about them on every build is how the report stops being read. `--github` emits annotations so findings land on the diff itself.
 
-Exit codes: `0` nothing that locks or breaks a deploy, `1` something that does, `2` bad arguments. Notices never fail a run — a check that fails on things it admits are usually fine is one somebody passes `--force` to for the rest of its life.
+Exit codes: `0` nothing that locks or breaks a deploy, `1` something that does, `2` bad arguments. Notices never fail a run, since a check that fails on things it admits are usually fine is one somebody passes `--force` to for the rest of its life.
 
 The standalone binary needs no `composer install` and no booted app, so it runs on a fresh checkout.
 
