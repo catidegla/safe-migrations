@@ -392,6 +392,140 @@ PHP;
         $this->assertSame([], $findings);
     }
 
+    /* --------------------------------------------------------- the lock queue */
+
+    #[Test]
+    public function an_instant_column_add_still_reports_the_lock_queue(): void
+    {
+        // The rule for the migration that passes every other rule. Nothing
+        // here is slow; the wait for the lock is, and everything arriving
+        // behind that wait is stuck for the length of it.
+        $finding = $this->firstOf($this->onExisting("            \$table->string('phone')->nullable();"), 'lock-queue');
+
+        $this->assertNotNull($finding);
+        $this->assertSame(Finding::NOTICE, $finding->severity);
+        $this->assertStringContainsString("SET lock_timeout = '3s'", $finding->instead);
+    }
+
+    #[Test]
+    public function a_constant_default_on_a_modern_version_is_instant_and_still_queues(): void
+    {
+        $this->assertNotNull($this->firstOf($this->onExisting("            \$table->string('a')->default('x');", 'pgsql', '16'), 'lock-queue'));
+    }
+
+    #[Test]
+    public function the_queue_is_not_mentioned_where_the_table_is_rewritten_anyway(): void
+    {
+        // add-column-with-default has already reported it and already said to
+        // do something else. A footnote underneath a blocking finding is how a
+        // report gets skimmed.
+        $rules = $this->rules($this->onExisting("            \$table->string('a')->default('x');", 'pgsql', '10'));
+
+        $this->assertContains('add-column-with-default', $rules);
+        $this->assertNotContains('lock-queue', $rules);
+    }
+
+    #[Test]
+    public function a_volatile_default_is_a_rewrite_on_every_version_so_the_queue_stays_quiet(): void
+    {
+        $rules = $this->rules($this->onExisting("            \$table->timestamp('seen_at')->default(DB::raw('now()'));", 'pgsql', '16'));
+
+        $this->assertContains('add-column-with-default', $rules);
+        $this->assertNotContains('lock-queue', $rules);
+    }
+
+    #[Test]
+    public function a_not_null_column_with_no_default_is_reported_once_and_not_twice(): void
+    {
+        $rules = $this->rules($this->onExisting("            \$table->string('a');"));
+
+        $this->assertContains('add-not-null-column', $rules);
+        $this->assertNotContains('lock-queue', $rules);
+    }
+
+    #[Test]
+    public function nothing_in_a_create_table_reaches_the_queue_rule(): void
+    {
+        $findings = $this->lint(<<<'PHP'
+                Schema::create('posts', function (Blueprint $table) {
+                    $table->string('title')->nullable();
+                });
+        PHP);
+
+        $this->assertSame([], $findings);
+    }
+
+    #[Test]
+    public function one_lock_is_taken_for_the_block_so_one_finding_is_reported(): void
+    {
+        // Six nullable columns are one ALTER and one queue. Six notices would
+        // read as six problems and teach people to skim the section.
+        $findings = $this->lint(<<<'PHP'
+                Schema::table('users', function (Blueprint $table) {
+                    $table->string('a')->nullable();
+                    $table->string('b')->nullable();
+                    $table->string('c')->nullable();
+                });
+        PHP);
+
+        $this->assertCount(1, array_filter($findings, fn (Finding $f) => $f->rule === 'lock-queue'));
+    }
+
+    #[Test]
+    public function two_tables_in_one_migration_each_get_their_own(): void
+    {
+        $findings = $this->lint(<<<'PHP'
+                Schema::table('users', function (Blueprint $table) {
+                    $table->string('a')->nullable();
+                });
+                Schema::table('posts', function (Blueprint $table) {
+                    $table->string('b')->nullable();
+                });
+        PHP);
+
+        $this->assertCount(2, array_filter($findings, fn (Finding $f) => $f->rule === 'lock-queue'));
+    }
+
+    #[Test]
+    public function a_project_that_sets_a_timeout_is_not_asked_again(): void
+    {
+        $code = "<?php\nSchema::table('users', function (Blueprint \$table) {\n    \$table->string('a')->nullable();\n});\n";
+
+        $silent = (new Linter(Target::of('pgsql', '16', '3s')))->lint(['m.php' => $code]);
+
+        $this->assertSame([], $this->rules($silent));
+    }
+
+    #[Test]
+    public function zero_means_no_timeout_on_postgres_and_the_strictest_one_on_sql_server(): void
+    {
+        // Same digit, inverse meaning. Postgres reads 0 as "wait for ever",
+        // which is the state the rule exists to warn about; SQL Server reads
+        // it as "do not wait at all", which is the strongest guard there is.
+        $this->assertFalse(Target::of('pgsql', '16', '0')->guardsLockQueue());
+        $this->assertTrue(Target::of('sqlsrv', '16', '0')->guardsLockQueue());
+        $this->assertFalse(Target::of('pgsql', '16', '')->guardsLockQueue());
+        $this->assertTrue(Target::of('pgsql', '16', '3s')->guardsLockQueue());
+    }
+
+    #[Test]
+    public function each_engine_is_told_to_set_its_own_setting(): void
+    {
+        // Seconds on MySQL, milliseconds on Postgres. Getting that backwards
+        // is three orders of magnitude in the direction of no timeout at all.
+        $mysql = $this->firstOf($this->onExisting("            \$table->string('a')->nullable();", 'mysql', '8.0'), 'lock-queue');
+        $this->assertStringContainsString('SET SESSION lock_wait_timeout = 3', $mysql->instead);
+
+        $sqlsrv = $this->firstOf($this->onExisting("            \$table->string('a')->nullable();", 'sqlsrv', '16'), 'lock-queue');
+        $this->assertStringContainsString('SET LOCK_TIMEOUT 3000', $sqlsrv->instead);
+    }
+
+    #[Test]
+    public function sqlite_takes_one_writer_at_a_time_so_there_is_no_queue_to_bound(): void
+    {
+        $this->assertNull($this->firstOf($this->onExisting("            \$table->string('a')->nullable();", 'sqlite', '3'), 'lock-queue'));
+    }
+
     /* ------------------------------------------------------------- the target */
 
     #[Test]

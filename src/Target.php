@@ -33,6 +33,7 @@ final class Target
         public readonly string $driver,
         public readonly int $major,
         public readonly int $minor,
+        public readonly ?string $lockTimeout = null,
     ) {}
 
     /**
@@ -41,8 +42,16 @@ final class Target
      *                        the old behaviour", because guessing a modern
      *                        version on no evidence is the direction that
      *                        stays quiet about a real problem.
+     * @param string|null $lockTimeout what the project sets before its DDL, if
+     *                        it sets anything. Not a property of the server
+     *                        and it sits here anyway, because this is the
+     *                        object holding everything true about the run
+     *                        rather than about the file, and whether a lock
+     *                        request is allowed to queue forever is exactly
+     *                        that: unknowable from a migration, decided once
+     *                        per project.
      */
-    public static function of(string $driver, string $version = ''): self
+    public static function of(string $driver, string $version = '', ?string $lockTimeout = null): self
     {
         $driver = strtolower(trim($driver));
 
@@ -57,10 +66,13 @@ final class Target
 
         preg_match('/^(\d+)(?:\.(\d+))?/', trim($version), $matches);
 
+        $lockTimeout = $lockTimeout === null ? null : trim($lockTimeout);
+
         return new self(
             $normalised,
             (int) ($matches[1] ?? 0),
             (int) ($matches[2] ?? 0),
+            $lockTimeout === '' ? null : $lockTimeout,
         );
     }
 
@@ -109,6 +121,56 @@ final class Target
             $this->driver === self::MYSQL => $this->atLeast(8),
             $this->driver === self::MARIADB => $this->atLeast(10, 3),
             default => false,
+        };
+    }
+
+    /**
+     * Whether the project bounds how long its DDL waits for a lock.
+     *
+     * Zero is the trap here and it does not mean the same thing twice. On
+     * Postgres lock_timeout = 0 disables the timeout and the statement waits
+     * for ever, which is the state this rule exists to warn about, so zero
+     * reads as unset. On SQL Server LOCK_TIMEOUT 0 is the opposite, giving up
+     * the instant the lock is unavailable, which is the strictest guard there
+     * is. Same digit, inverse meaning, so the driver has to be asked.
+     */
+    public function guardsLockQueue(): bool
+    {
+        if ($this->lockTimeout === null) {
+            return false;
+        }
+
+        if ($this->lockTimeout === '0' && ! ($this->driver === self::SQLSERVER)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /** What the setting is called here, for naming it in a report. */
+    public function lockTimeoutSetting(): ?string
+    {
+        return match (true) {
+            $this->isPostgres() => 'lock_timeout',
+            $this->isMysqlFamily() => 'lock_wait_timeout',
+            $this->driver === self::SQLSERVER => 'LOCK_TIMEOUT',
+            // SQLite takes one writer at a time and has no queue of this
+            // shape, so there is nothing here to bound and nothing to say.
+            default => null,
+        };
+    }
+
+    /** The statement that bounds the wait, spelled the way this engine takes it. */
+    public function lockTimeoutStatement(): ?string
+    {
+        return match (true) {
+            $this->isPostgres() => "SET lock_timeout = '3s'",
+            // Seconds on MySQL, milliseconds on Postgres, and getting that
+            // backwards is a three order of magnitude mistake in the
+            // direction of no timeout at all.
+            $this->isMysqlFamily() => 'SET SESSION lock_wait_timeout = 3',
+            $this->driver === self::SQLSERVER => 'SET LOCK_TIMEOUT 3000',
+            default => null,
         };
     }
 

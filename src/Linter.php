@@ -27,14 +27,26 @@ final class Linter
     {
         $parser = $this->parser ?? new Parser();
         $rules = Rules::all();
+        $oncePerTable = Rules::oncePerTable();
         $findings = [];
 
         foreach ($files as $path => $code) {
             $operations = $parser->expand($parser->parse($code));
+            $reported = [];
 
             foreach ($operations as $operation) {
                 foreach ($rules as $id => $check) {
                     if (in_array($id, $this->disabled, true)) {
+                        continue;
+                    }
+
+                    // Some findings are about the table and would otherwise
+                    // repeat once per column in the same block. Which ones is
+                    // Rules' business, so that adding one still never means
+                    // editing this file.
+                    $key = "{$id}\0{$operation->table}";
+
+                    if (isset($reported[$key])) {
                         continue;
                     }
 
@@ -49,6 +61,10 @@ final class Linter
 
                     if ($result === null) {
                         continue;
+                    }
+
+                    if (in_array($id, $oncePerTable, true)) {
+                        $reported[$key] = true;
                     }
 
                     [$severity, $summary, $because, $instead] = $result;

@@ -27,6 +27,21 @@ namespace Catidegla\SafeMigrations;
 final class Rules
 {
     /**
+     * Rules whose finding is about the table rather than about the line.
+     *
+     * One exclusive lock is taken for the block, not one per column, so a
+     * migration adding six nullable columns has one lock queue and not six.
+     * Reported six times it would read as six problems, and the rule that
+     * exists to be noticed becomes the rule people scroll past.
+     *
+     * @return string[]
+     */
+    public static function oncePerTable(): array
+    {
+        return ['lock-queue'];
+    }
+
+    /**
      * @return array<string, callable(Operation, Target): ?array{string, string, string, string}>
      *         rule id => a check returning [severity, summary, because, instead]
      */
@@ -35,6 +50,7 @@ final class Rules
         return [
             'add-column-with-default' => self::addColumnWithDefault(...),
             'add-not-null-column' => self::addNotNullColumn(...),
+            'lock-queue' => self::lockQueue(...),
             'add-index' => self::addIndex(...),
             'add-foreign-key' => self::addForeignKey(...),
             'change-column' => self::changeColumn(...),
@@ -86,12 +102,7 @@ final class Rules
             return null;
         }
 
-        if ($op->isNullable() || $op->hasDefault()) {
-            return null;
-        }
-
-        // Columns that carry their own default or are nullable by definition.
-        if (in_array($op->type, ['softDeletes', 'softDeletesTz', 'rememberToken', 'nullableMorphs', 'nullableTimestamps', 'nullableUuidMorphs', 'nullableUlidMorphs'], true)) {
+        if (! $op->failsOnAPopulatedTable()) {
             return null;
         }
 
@@ -100,6 +111,62 @@ final class Rules
             "adding {$op->column} as not null with no default fails on a table with rows",
             'every existing row needs a value and there is none to give them, so the statement is rejected outright on a populated table and the migration stops halfway',
             'add it nullable, backfill, then tighten the constraint in a later migration once every row has a value',
+        ];
+    }
+
+    /**
+     * The lock nobody waits for, and the queue that forms behind the wait.
+     *
+     * This is the rule for the migration that passes every other rule. Adding
+     * a nullable column, or a constant default on a version where that is a
+     * catalogue write, is genuinely instant: the work takes no measurable
+     * time and the report is clean and right to be.
+     *
+     * What is not instant is getting the exclusive lock to do it in. That
+     * request waits behind any transaction already touching the table, an
+     * open one, a long report, a leaked connection. And it waits *in front of*
+     * everything that arrives afterwards, because a lock request of this
+     * strength is not overtaken by the weaker ones behind it. So the table
+     * stops serving, not for the length of the migration, but for the length
+     * of whatever was already running, and the migration that caused it
+     * finishes in eleven milliseconds once it finally starts.
+     *
+     * A linter cannot see the reader. It is in another session, on another
+     * machine, and it may not have started yet. What it can see is whether
+     * anything has been set to stop the wait being unbounded, which is why
+     * this asks the project rather than the file, and says nothing once the
+     * project has answered.
+     */
+    private static function lockQueue(Operation $op, Target $target): ?array
+    {
+        if ($op->kind !== Operation::ADD_COLUMN || ! $op->isOnExistingTable()) {
+            return null;
+        }
+
+        $statement = $target->lockTimeoutStatement();
+
+        if ($statement === null || $target->guardsLockQueue()) {
+            return null;
+        }
+
+        // Only where the add is otherwise clean. Where it rewrites the table
+        // or is rejected outright, another rule has already reported it and
+        // already said to do something else, and the queue is the smaller half
+        // of a problem that has a larger half. Two findings on one line, one
+        // of which is a footnote to the other, is how a report gets skimmed.
+        if ($op->failsOnAPopulatedTable()) {
+            return null;
+        }
+
+        if ($op->hasDefault() && (! $target->defaultOnAddIsInstant() || $op->hasVolatileDefault())) {
+            return null;
+        }
+
+        return [
+            Finding::NOTICE,
+            "adding {$op->column} is instant, and the lock it needs may not be",
+            'the change is a catalogue write and the lock it needs is not: the request queues behind whatever is already reading the table, and every statement arriving after it queues behind the request rather than behind the reader. One long select is then an outage for as long as that select runs, caused by a migration that finishes in milliseconds once it starts',
+            "run {$statement} first so the attempt gives up rather than queueing, and retry the migration, because failing fast only helps if something tries again",
         ];
     }
 

@@ -52,6 +52,8 @@ if ($has('help') || count($argv) === 1) {
     --path <dir>        where the migrations are (default: database/migrations)
     --database <name>   mysql, mariadb, pgsql, sqlite, sqlsrv
     --version <n>       the server version, which decides half the rules
+    --lock-timeout <v>  what you set before the DDL runs, if anything, so the
+                        lock-queue rule stops asking ('3s', 3, 3000)
     --since <ref>       only migrations added since this git ref
     --disable <ids>     comma separated rule ids to skip
     --json              machine readable
@@ -111,7 +113,7 @@ if ($files === []) {
     exit(0);
 }
 
-$target = Target::of($flag('database', '') ?? '', $flag('version', '') ?? '');
+$target = Target::of($flag('database', '') ?? '', $flag('version', '') ?? '', $flag('lock-timeout'));
 $disabled = array_filter(array_map('trim', explode(',', $flag('disable', '') ?? '')));
 
 $findings = (new Linter($target, $disabled))->lint($files);

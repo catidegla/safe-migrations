@@ -20,6 +20,13 @@ inputs:
       since 11. Without a version every rule assumes the oldest behaviour,
       which stays loud rather than staying quiet about a real outage.
     default: ''
+  lock-timeout:
+    description: >-
+      What you set before the DDL runs, if anything. An instant migration still
+      has to acquire an exclusive lock, and everything arriving after that
+      request queues behind it until it is granted. Set this and the lock-queue
+      rule stops asking: '3s' on Postgres, 3 on MySQL, 3000 on SQL Server.
+    default: ''
   since:
     description: >-
       Only check migrations added since this ref. On a pull request this
@@ -66,6 +73,7 @@ runs:
         args=(--path "${{ inputs.path }}" --database "${{ inputs.database }}")
         if [ -n "${{ inputs.version }}" ]; then args+=(--version "${{ inputs.version }}"); fi
         if [ -n "${{ inputs.disable }}" ]; then args+=(--disable "${{ inputs.disable }}"); fi
+        if [ -n "${{ inputs.lock-timeout }}" ]; then args+=(--lock-timeout "${{ inputs.lock-timeout }}"); fi
         if [ "${{ inputs.strict }}" = "true" ]; then args+=(--strict); fi
         if [ "${{ inputs.annotations }}" = "true" ]; then args+=(--github); fi
 

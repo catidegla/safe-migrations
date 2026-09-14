@@ -64,6 +64,34 @@ final class Operation
     }
 
     /**
+     * Column types Laravel gives a nullable definition of their own.
+     *
+     * $table->softDeletes() is a nullable timestamp whether or not anybody
+     * wrote ->nullable(), so reading it as a bare not null column would report
+     * a failure that cannot happen.
+     */
+    private const SELF_DEFINING = [
+        'softDeletes', 'softDeletesTz', 'rememberToken', 'nullableMorphs',
+        'nullableTimestamps', 'nullableUuidMorphs', 'nullableUlidMorphs',
+    ];
+
+    /**
+     * Whether adding this column is rejected outright on a table with rows.
+     *
+     * Not null, and no value to give the rows that already exist. Worth a name
+     * of its own because two rules need the same answer and for opposite
+     * reasons: one to report it, the other to stay quiet about a migration
+     * that has already been reported.
+     */
+    public function failsOnAPopulatedTable(): bool
+    {
+        return $this->kind === self::ADD_COLUMN
+            && ! $this->isNullable()
+            && ! $this->hasDefault()
+            && ! in_array($this->type, self::SELF_DEFINING, true);
+    }
+
+    /**
      * The functions every engine has to evaluate per row.
      *
      * Deliberately a list of names rather than "anything that looks like a

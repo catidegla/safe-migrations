@@ -25,6 +25,7 @@ class LintMigrationsCommand extends Command
         {--path= : Where the migrations are, defaulting to the configured path}
         {--database= : Override the driver rather than reading the connection}
         {--db-version= : Override the server version rather than asking it}
+        {--lock-timeout= : What you set before the DDL runs, if anything}
         {--since= : Only migrations added since this git ref}
         {--strict : Fail on notices as well}
         {--json : Machine readable output}
@@ -113,7 +114,16 @@ class LintMigrationsCommand extends Command
             }
         }
 
-        return Target::of((string) $driver, (string) ($version ?? ''));
+        // Not asked of the server on purpose. A session variable read here
+        // says what this connection has, not what the one running the
+        // migration will have, and those are different processes.
+        $lockTimeout = $this->option('lock-timeout') ?? config('safe-migrations.lock_timeout');
+
+        return Target::of(
+            (string) $driver,
+            (string) ($version ?? ''),
+            $lockTimeout === null ? null : (string) $lockTimeout,
+        );
     }
 
     /** @param array<string, string> $files */

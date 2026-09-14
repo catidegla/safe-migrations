@@ -34,6 +34,27 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | What you set before the DDL runs
+    |--------------------------------------------------------------------------
+    |
+    | An instant migration still has to acquire an exclusive lock, and that
+    | request waits behind whatever is already reading the table while every
+    | statement arriving after it waits behind the request. One long select
+    | and the table stops serving, for the length of the select rather than
+    | the length of the migration.
+    |
+    | Setting a timeout turns that into a failed migration you run again,
+    | which is the trade worth making. Put what you set here and the lock-queue
+    | rule stops asking: '3s' on Postgres, 3 on MySQL, 3000 on SQL Server.
+    | Left null it assumes nothing is set, because that is the default on
+    | every one of them.
+    |
+    */
+
+    'lock_timeout' => null,
+
+    /*
+    |--------------------------------------------------------------------------
     | Rules this project has decided not to run
     |--------------------------------------------------------------------------
     |

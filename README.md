@@ -65,9 +65,40 @@ Conflating them wastes people's time, so they are separate:
 
 `dropColumn` is the clearest case. Postgres does it in microseconds. Your half-deployed application breaks on every request that hits an old process, and a `select *` makes it certain.
 
+## The instant migration that takes the table down
+
+The rule worth reading about, because it fires on the migration that passes every other rule.
+
+Adding a nullable column is instant. Adding a constant default on Postgres 11+ is instant. The work is a catalogue write and it is genuinely over in microseconds, so the report is clean and right to be.
+
+Getting the exclusive lock to do it in is not instant. That request waits behind any transaction already touching the table, and **every statement arriving afterwards queues behind the request** rather than behind the reader, because a lock that strong is not overtaken by the weaker ones stacking up underneath it.
+
+So the table stops serving for the length of whatever was already running. One long `SELECT`, one open transaction somebody left in a psql window, one leaked connection, and the migration that caused the outage completes in eleven milliseconds once it finally starts.
+
+```
+note   line 12  adding phone is instant, and the lock it needs may not be
+       $table->string('phone')->nullable();
+       instead: run SET lock_timeout = '3s' first so the attempt gives up
+       rather than queueing, and retry the migration
+```
+
+A linter cannot see the reader. It is in another session, on another machine, and it may not have started yet. What it can see is whether anything bounds the wait. So tell it once and it stops asking:
+
+```php
+'lock_timeout' => '3s',   // 3 on MySQL, 3000 on SQL Server
+```
+
+```bash
+safe-migrations --database pgsql --version 16 --lock-timeout 3s
+```
+
+One finding per table, not one per column, because a block adding six nullable columns takes one lock and not six. Nothing is reported where the add rewrites the table anyway, because `add-column-with-default` has already said so and already said what to do instead. Nothing is reported on SQLite, which takes one writer at a time and has no queue of this shape.
+
+**`0` is not a timeout on Postgres**, it disables the timeout and waits for ever, so it reads here as unset. On SQL Server the same digit is the strictest guard there is, and reads as set.
+
 ## What it checks
 
-Adding a column with a default, adding one `not null` with no default, building an index, adding a foreign key, changing a column type, dropping or renaming a column or table, backfilling data inside a migration, and raw SQL it cannot read.
+Adding a column with a default, adding one `not null` with no default, an instant add whose lock can still queue, building an index, adding a foreign key, changing a column type, dropping or renaming a column or table, backfilling data inside a migration, and raw SQL it cannot read.
 
 **Nothing inside a `Schema::create` is ever a finding.** A brand new table has no rows and no readers, so nothing in it can lock anybody out. A linter that warns there is the kind people pass `--force` to.
 
@@ -85,10 +116,11 @@ Naming a rule turns off that rule on that line. A bare `safe-migrations-ignore` 
 ## In CI
 
 ```yaml
-- uses: catidegla/safe-migrations@v0.2.0
+- uses: catidegla/safe-migrations@v0.3.0
   with:
     database: pgsql
     version: '16'
+    lock-timeout: '3s'   # omit it and the lock-queue rule will ask
 ```
 
 On a pull request it checks only the migrations that pull request added, because
